@@ -2478,6 +2478,25 @@ class TestTensordot:
         out = tensordot(mat, mat, axes=[[-1], [-1]])
         assert equal_computations([out], [dot(mat, mat.T)])
 
+    def test_static_shape_reshape_no_shape_subtensor(self):
+        """When all relevant dims are static, tensordot's reshape arguments
+        should fold to plain int constants — no Shape / Subtensor / MakeVector
+        chain produced just to read sizes back from the operand shapes.
+        """
+        from pytensor.graph.traversal import io_toposort
+        from pytensor.tensor.shape import Shape, Shape_i
+
+        a = tensor("a", shape=(3, 4, 5))
+        b = tensor("b", shape=(5, 6, 7))
+        out = tensordot(a, b, axes=[[2], [0]])
+
+        nodes = io_toposort([], [out])
+        shape_nodes = [n for n in nodes if isinstance(n.op, Shape | Shape_i)]
+        assert shape_nodes == [], (
+            "tensordot over fully-static dims should not introduce Shape ops; "
+            f"got: {[type(n.op).__name__ for n in shape_nodes]}"
+        )
+
 
 def test_smallest():
     x = dvector()

@@ -38,7 +38,7 @@ from pytensor.tensor.elemwise import (
     get_normalized_batch_axes,
     scalar_elemwise,
 )
-from pytensor.tensor.shape import shape, specify_shape
+from pytensor.tensor.shape import shape, shape_tuple, specify_shape
 from pytensor.tensor.type import (
     DenseTensorType,
     complex_dtypes,
@@ -3358,9 +3358,31 @@ def tensordot(
 
     # Convert tensordot into a stacked dot product.
     # We stack the summed axes and the non-summed axes of each tensor separately,
-    # and place the summed axes at the end of a and the beginning of b
+    # and place the summed axes at the end of a and the beginning of b.
+    # We use `shape_tuple` so static dims come back as `ScalarConstant`s and
+    # multiply known dims together in Python (see `_axes_product`) so that the
+    # reshape shape vector is a plain int constant when all participating dims
+    # are static, instead of a chain of Mul nodes over runtime Shape lookups.
+    shape_a = shape_tuple(a)
+    shape_b = shape_tuple(b)
+
+    def _axes_product(static_shape, sym_shape, axes):
+        static_product = 1
+        runtime_terms = []
+        for axis in axes:
+            s = static_shape[axis]
+            if s is None:
+                runtime_terms.append(sym_shape[axis])
+            else:
+                static_product *= s
+        if not runtime_terms:
+            return constant(static_product, dtype="int64")
+        if static_product == 1:
+            return variadic_mul(*runtime_terms)
+        return variadic_mul(constant(static_product, dtype="int64"), *runtime_terms)
+
     non_summed_axes_a = [k for k in range(ndim_a) if k not in axes_a]
-    non_summed_dims_a = [runtime_shape_a[axis] for axis in non_summed_axes_a]
+    non_summed_dims_a = [shape_a[axis] for axis in non_summed_axes_a]
     transpose_axes_a = non_summed_axes_a + axes_a
     # We only need a reshape when we need to combine summed or non-summed dims
     # or introduce a new dimension (expand_dims) when doing a non-scalar outer product (len(axes) = 0)
@@ -3369,7 +3391,7 @@ def tensordot(
     )
 
     non_summed_axes_b = [k for k in range(ndim_b) if k not in axes_b]
-    non_summed_dims_b = [runtime_shape_b[axis] for axis in non_summed_axes_b]
+    non_summed_dims_b = [shape_b[axis] for axis in non_summed_axes_b]
     transpose_axes_b = axes_b + non_summed_axes_b
     b_needs_reshape = (ndim_b != 0) and (
         (len(non_summed_axes_b) > 1) or (len(axes_b) != 1)
@@ -3379,14 +3401,14 @@ def tensordot(
     # but to facilitate reasoning about useless reshapes we compute both from their shapes
     at = a.transpose(transpose_axes_a)
     if a_needs_reshape:
-        non_summed_size_a = variadic_mul(*non_summed_dims_a)
-        summed_size_a = variadic_mul(*[runtime_shape_a[axis] for axis in axes_a])
+        non_summed_size_a = _axes_product(static_shape_a, shape_a, non_summed_axes_a)
+        summed_size_a = _axes_product(static_shape_a, shape_a, axes_a)
         at = at.reshape((non_summed_size_a, summed_size_a))
 
     bt = b.transpose(transpose_axes_b)
     if b_needs_reshape:
-        non_summed_size_b = variadic_mul(*non_summed_dims_b)
-        summed_size_b = variadic_mul(*[runtime_shape_b[axis] for axis in axes_b])
+        non_summed_size_b = _axes_product(static_shape_b, shape_b, non_summed_axes_b)
+        summed_size_b = _axes_product(static_shape_b, shape_b, axes_b)
         bt = bt.reshape((summed_size_b, non_summed_size_b))
 
     res = dot(at, bt)
