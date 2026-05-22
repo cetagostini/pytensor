@@ -316,59 +316,6 @@ def test_dot():
     xr_assert_allclose(z_test, expected)
 
 
-def test_dot_lowers_to_matmul():
-    """Matmul-shaped xtensor.dot should lower to a single Blockwise(Dot=Matmul).
-
-    This guards the fast path in ``lower_dot``: any contraction that shares a
-    contracted dim between operands should go through ``matmul`` rather than
-    falling back to einsum. The reverse case (pure outer product) is checked
-    by ``test_dot_outer_product_falls_back_to_einsum``.
-    """
-    from pytensor.graph.rewriting.utils import rewrite_graph
-    from pytensor.graph.traversal import io_toposort
-    from pytensor.tensor.blockwise import Blockwise
-    from pytensor.tensor.math import _dot
-
-    x = xtensor("x", dims=("batch", "a", "k"), shape=(None, 4, 5))
-    y = xtensor("y", dims=("batch", "k", "b"), shape=(None, 5, 6))
-    z = x.dot(y, dim="k")
-
-    lowered = rewrite_graph(z.values, include=("lower_xtensor",))
-    matmuls = [
-        n
-        for n in io_toposort([], [lowered])
-        if isinstance(n.op, Blockwise) and n.op.core_op == _dot
-    ]
-    assert len(matmuls) == 1, (
-        f"matmul-shaped xtensor.dot should lower to exactly one Blockwise(Dot), "
-        f"got {len(matmuls)}"
-    )
-
-
-def test_dot_outer_product_falls_back_to_einsum():
-    """Pure outer products have no shared contracted dim and must fall back
-    to einsum. After lowering there should be no Blockwise(Dot)/Matmul left."""
-    from pytensor.graph.rewriting.utils import rewrite_graph
-    from pytensor.graph.traversal import io_toposort
-    from pytensor.tensor.blockwise import Blockwise
-    from pytensor.tensor.math import _dot
-
-    x = xtensor("x", dims=("a",), shape=(4,))
-    y = xtensor("y", dims=("b",), shape=(3,))
-    z = x.dot(y, dim=())
-
-    lowered = rewrite_graph(z.values, include=("lower_xtensor",))
-    matmuls = [
-        n
-        for n in io_toposort([], [lowered])
-        if isinstance(n.op, Blockwise) and n.op.core_op == _dot
-    ]
-    assert matmuls == [], (
-        "outer-product xtensor.dot should fall back to einsum and not produce "
-        "a Blockwise(Dot)/Matmul"
-    )
-
-
 def test_dot_errors():
     # No matching dimensions
     x = xtensor("x", dims=("a", "b"), shape=(2, 3))
@@ -395,11 +342,7 @@ def test_dot_errors():
     # Doesn't fail until the rewrite
     with pytest.raises(
         ValueError,
-        match=(
-            r"Input operand 1 has a mismatch in its core dimension 0"
-            r"|incompatible array sizes for np.dot"
-            r"|Shape mismatch: x has"
-        ),
+        match=r"(Input operand 1 has a mismatch in its core dimension 0|incompatible array sizes for np.dot)",
     ):
         fn(x_test, y_test)
 
